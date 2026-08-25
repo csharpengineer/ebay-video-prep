@@ -7,12 +7,14 @@
         mc:Ignorable="d"
         Title="eBay Video Prep"
         Width="1100"
-        Height="760"
+        Height="800"
         MinWidth="760"
-        MinHeight="540"
+        MinHeight="580"
         WindowStartupLocation="CenterScreen"
         Background="#F4F6F8"
         AllowDrop="True"
+        Loaded="Window_Loaded"
+        Closed="Window_Closed"
         DragOver="Window_DragOver"
         Drop="Window_Drop">
 
@@ -20,6 +22,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -197,6 +200,79 @@
         </Grid>
 
         <Border Grid.Row="2"
+                Background="White"
+                BorderBrush="#D9DEE3"
+                BorderThickness="0,1,0,0"
+                Padding="14,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="24" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="150" />
+                    <ColumnDefinition Width="55" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0"
+                           Text="Position"
+                           VerticalAlignment="Center"
+                           Foreground="#59636E" />
+
+                <Slider x:Name="TimelineSlider"
+                        Grid.Column="1"
+                        Minimum="0"
+                        Maximum="1"
+                        Value="0"
+                        IsEnabled="False"
+                        Margin="10,0"
+                        VerticalAlignment="Center"
+                        PreviewMouseLeftButtonDown="TimelineSlider_PreviewMouseLeftButtonDown"
+                        PreviewMouseLeftButtonUp="TimelineSlider_PreviewMouseLeftButtonUp"
+                        LostMouseCapture="TimelineSlider_LostMouseCapture"
+                        ValueChanged="TimelineSlider_ValueChanged" />
+
+                <TextBlock x:Name="TimeReadoutText"
+                           Grid.Column="2"
+                           Text="0:00 / 0:00"
+                           MinWidth="95"
+                           TextAlignment="Right"
+                           VerticalAlignment="Center"
+                           Foreground="#59636E" />
+
+                <TextBlock Grid.Column="4"
+                           Text="Speed"
+                           VerticalAlignment="Center"
+                           Foreground="#59636E" />
+
+                <!-- Declared before SpeedSlider so it exists if ValueChanged fires during XAML load. -->
+                <TextBlock x:Name="SpeedValueText"
+                           Grid.Column="6"
+                           Text="1×"
+                           Margin="10,0,0,0"
+                           TextAlignment="Right"
+                           VerticalAlignment="Center"
+                           FontWeight="SemiBold"
+                           Foreground="#303840" />
+
+                <Slider x:Name="SpeedSlider"
+                        Grid.Column="5"
+                        Minimum="0"
+                        Maximum="5"
+                        Value="2"
+                        TickFrequency="1"
+                        TickPlacement="BottomRight"
+                        IsSnapToTickEnabled="True"
+                        IsEnabled="False"
+                        Margin="10,0,0,0"
+                        VerticalAlignment="Center"
+                        ToolTip="0.25× · 0.5× · 1× · 2× · 4× · 10×"
+                        ValueChanged="SpeedSlider_ValueChanged" />
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="3"
                 Background="White"
                 BorderBrush="#D9DEE3"
                 BorderThickness="0,1,0,0"
