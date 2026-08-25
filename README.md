@@ -8,7 +8,8 @@ Drag in an MP4 or MOV, preview it continuously, position and resize a visual cro
 
 - Drag-and-drop or open a video file.
 - Loop the video continuously while editing.
-- Move and resize a crop rectangle directly over the preview.
+- Honor phone display-rotation metadata so portrait recordings preview upright.
+- Move and resize a transparent crop rectangle directly over the preview.
 - Quickly reset to the full frame or choose a centered square crop.
 - Export to MP4/H.264 with audio removed.
 - Keep the output within a 1920x1080 bounding box without upscaling.
@@ -18,9 +19,9 @@ Drag in an MP4 or MOV, preview it continuously, position and resize a visual cro
 
 - Windows 10 or Windows 11.
 - .NET 9 Desktop Runtime when using a framework-dependent build.
-- FFmpeg available either:
-  - as `ffmpeg.exe` next to the app;
-  - at `tools\ffmpeg.exe` next to the app; or
+- FFmpeg/FFprobe available either:
+  - as `ffmpeg.exe` and `ffprobe.exe` next to the app;
+  - in the `tools` folder next to the app; or
   - on `PATH`.
 
 FFmpeg can be installed with Windows Package Manager:
@@ -39,12 +40,13 @@ dotnet build .\EbayVideoPrep.sln -c Release
 
 1. Launch **eBay Video Prep**.
 2. Drag an `.mp4` or `.mov` into the window, or click **Open Video**.
-3. Drag inside the crop rectangle to move it.
-4. Drag an edge or corner handle to resize it.
-5. Click **Save eBay MP4**.
-6. Choose the output filename.
+3. The app reads the video's display orientation and shows phone footage upright when rotation metadata is present.
+4. Drag inside the crop rectangle to move it.
+5. Drag an edge or corner handle to resize it.
+6. Click **Save eBay MP4**.
+7. Choose the output filename.
 
-The export is re-encoded as H.264 because cropping requires re-encoding. Audio is removed, the output pixel format is broadly compatible `yuv420p`, and `faststart` is enabled for web playback.
+The export is re-encoded as H.264 because cropping requires re-encoding. Audio is removed, the output pixel format is broadly compatible `yuv420p`, and `faststart` is enabled for web playback. Crop coordinates are calculated against the display-oriented frame so portrait phone footage exports the same region shown in the preview.
 
 ## eBay video constraints
 
@@ -56,7 +58,7 @@ Always check eBay's current documentation if an upload is rejected, since platfo
 
 Early MVP. The first version intentionally stays focused on one job: **crop a product video visually and save a quiet, upload-ready copy quickly**.
 
-Likely follow-up features include batch processing, reusable crop presets, rotation, duration trimming, and automatic bitrate targeting for the 150 MB limit.
+Likely follow-up features include batch processing, reusable crop presets, manual rotation correction, duration trimming, and automatic bitrate targeting for the 150 MB limit.
 
 ## Trademark notice
 
