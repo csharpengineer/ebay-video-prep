@@ -1,11 +1,14 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Media.Imaging;
+using EbayVideoPrep.Services;
 
 namespace EbayVideoPrep;
 
 public partial class MainWindow
 {
+    private readonly FastCompositePreviewService _compositePreviewService = new();
+
     private CancellationTokenSource? _compositeCancellation;
     private bool _compositeInitialized;
     private bool _compositeGenerating;
@@ -100,7 +103,7 @@ public partial class MainWindow
             else
             {
                 // Keep the live preview visible while the composite is being built so
-                // opening a video never leaves the user staring at an empty frame.
+                // the crop can still be adjusted immediately instead of blocking the user.
                 CompositeImage.Visibility = Visibility.Collapsed;
                 VideoCanvas.Visibility = Visibility.Visible;
                 CompositeBusyBorder.Visibility = _compositeGenerating
@@ -140,7 +143,11 @@ public partial class MainWindow
 
         var inputPath = _inputPath;
         var loadGeneration = _loadGeneration;
-        var cancellation = new CancellationTokenSource();
+
+        // A crop aid is only useful if it arrives quickly. If FFmpeg cannot build the
+        // fast composite within ten seconds, fall back to Loop rather than making the
+        // user wait through a long background job.
+        var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         _compositeCancellation = cancellation;
         _compositeGenerating = true;
         _compositeReady = false;
@@ -148,17 +155,14 @@ public partial class MainWindow
 
         var duration = VideoPlayer.NaturalDuration.HasTimeSpan
             ? VideoPlayer.NaturalDuration.TimeSpan
-            : TimeSpan.FromMinutes(2);
+            : TimeSpan.FromSeconds(10);
 
-        CompositeBusyText.Text = duration > TimeSpan.FromMinutes(2)
-            ? "Building composite from the first 2 minutes..."
-            : "Building composite from 1-second samples...";
-
+        CompositeBusyText.Text = "Building fast turntable composite...";
         ApplyPreviewMode();
 
         if (CompositeModeRadio.IsChecked == true)
         {
-            StatusText.Text = "Building composite view from one frame per second...";
+            StatusText.Text = "Building a fast composite from a few turntable angles...";
         }
 
         var tempDirectory = Path.Combine(
@@ -171,7 +175,7 @@ public partial class MainWindow
         {
             Directory.CreateDirectory(tempDirectory);
 
-            var result = await _ffmpegService.CreateCompositePreviewAsync(
+            var result = await _compositePreviewService.CreateAsync(
                 inputPath,
                 compositePath,
                 duration,
@@ -192,12 +196,25 @@ public partial class MainWindow
             ApplyPreviewMode();
 
             StatusText.Text =
-                $"Composite ready from {result.SampleCount} one-second samples. " +
-                "Adjust the crop to cover the item's full motion, then save.";
+                $"Composite ready from {result.SampleCount} fast snapshots across " +
+                $"{result.SampleSpanSeconds:0.#} seconds. Adjust the crop to cover the item's full motion, then save.";
         }
         catch (OperationCanceledException)
         {
-            // Expected when another file is opened or the application closes.
+            // If this exact generation timed out, stop asking the user to wait and show
+            // the live loop instead. Cancellation caused by opening another file or
+            // closing the app clears _compositeCancellation first and needs no UI work.
+            if (ReferenceEquals(_compositeCancellation, cancellation) &&
+                loadGeneration == _loadGeneration &&
+                string.Equals(inputPath, _inputPath, StringComparison.OrdinalIgnoreCase))
+            {
+                _compositeGenerating = false;
+                _compositeReady = false;
+                CompositeModeRadio.IsChecked = false;
+                LoopModeRadio.IsChecked = true;
+                ApplyPreviewMode();
+                StatusText.Text = "Composite took more than 10 seconds; showing Loop instead.";
+            }
         }
         catch (Exception ex)
         {
