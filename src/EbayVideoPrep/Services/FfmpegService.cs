@@ -90,6 +90,102 @@ public sealed class FfmpegService
         return new VideoProbeInfo(width, height, rotation);
     }
 
+    public async Task<CompositePreviewResult> CreateCompositePreviewAsync(
+        string inputPath,
+        string outputPath,
+        TimeSpan duration,
+        CancellationToken cancellationToken = default)
+    {
+        var ffmpegPath = ResolveToolPath("ffmpeg.exe");
+
+        // One sample per second, capped at the first two minutes. Using the last frame
+        // of tmix after reversing produces one equal-weight average of the sampled set.
+        var sampleSeconds = duration > TimeSpan.Zero
+            ? Math.Min(duration.TotalSeconds, 120.0)
+            : 120.0;
+        var sampleCount = Math.Clamp((int)Math.Floor(sampleSeconds), 1, 120);
+
+        var filter =
+            "fps=1," +
+            "scale=w='min(iw,1280)':h='min(ih,1280)':" +
+            "force_original_aspect_ratio=decrease:force_divisible_by=2," +
+            $"tmix=frames={sampleCount}:weights='1',reverse";
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = ffmpegPath,
+            UseShellExecute = false,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(inputPath) ?? AppContext.BaseDirectory
+        };
+
+        string[] arguments =
+        [
+            "-y",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-i", inputPath,
+            "-t", sampleSeconds.ToString("0.###", CultureInfo.InvariantCulture),
+            "-map", "0:v:0",
+            "-vf", filter,
+            "-frames:v", "1",
+            "-an",
+            "-map_metadata", "-1",
+            outputPath
+        ];
+
+        foreach (var argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = new Process { StartInfo = startInfo };
+
+        try
+        {
+            process.Start();
+        }
+        catch (Win32Exception ex)
+        {
+            throw new InvalidOperationException(
+                "FFmpeg could not be started to build the composite preview. Install FFmpeg with " +
+                "'winget install --id Gyan.FFmpeg -e', or place ffmpeg.exe next to the application.",
+                ex);
+        }
+
+        var errorTask = process.StandardError.ReadToEndAsync();
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            TryKillProcess(process);
+            throw;
+        }
+
+        var standardError = await errorTask;
+        _ = await outputTask;
+
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"FFmpeg could not build the composite preview (exit code {process.ExitCode}).\n\n" +
+                TrimDiagnostic(standardError));
+        }
+
+        if (!File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
+        {
+            throw new InvalidOperationException("FFmpeg completed without producing a composite preview image.");
+        }
+
+        return new CompositePreviewResult(sampleCount);
+    }
+
     public async Task<ExportResult> ExportAsync(
         string inputPath,
         string outputPath,
@@ -283,6 +379,21 @@ public sealed class FfmpegService
         return executableName;
     }
 
+    private static void TryKillProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch
+        {
+            // Cancellation cleanup is best effort.
+        }
+    }
+
     private static string TrimDiagnostic(string text)
     {
         const int maxLength = 3000;
@@ -296,4 +407,5 @@ public sealed class FfmpegService
 }
 
 public readonly record struct VideoProbeInfo(int Width, int Height, int ClockwiseRotationDegrees);
+public readonly record struct CompositePreviewResult(int SampleCount);
 public readonly record struct ExportResult(long FileSizeBytes, bool ExceedsEbayFileSizeLimit);

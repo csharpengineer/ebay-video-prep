@@ -7,8 +7,6 @@ namespace EbayVideoPrep;
 
 public partial class MainWindow
 {
-    private static readonly double[] PlaybackSpeeds = [0.25, 0.5, 1.0, 2.0, 4.0, 10.0];
-
     private readonly DispatcherTimer _playbackUiTimer = new()
     {
         Interval = TimeSpan.FromMilliseconds(100)
@@ -31,14 +29,14 @@ public partial class MainWindow
         VideoPlayer.MediaOpened += Playback_VideoPlayer_MediaOpened;
         VideoPlayer.MediaEnded += Playback_VideoPlayer_MediaEnded;
 
-        SpeedValueText.Text = "1×";
-        SpeedSlider.Value = 2;
+        InitializeCompositeMode();
         _playbackUiTimer.Start();
     }
 
     private void Window_Closed(object? sender, EventArgs e)
     {
         _playbackUiTimer.Stop();
+        ShutdownCompositeMode();
 
         if (_playbackControlsInitialized)
         {
@@ -51,13 +49,8 @@ public partial class MainWindow
     {
         _isScrubbing = false;
         _resumeAfterScrub = false;
-
+        VideoPlayer.SpeedRatio = 1.0;
         InitializeTimelineFromMedia();
-
-        // Each newly opened video starts at normal inspection speed.
-        SpeedSlider.IsEnabled = true;
-        SpeedSlider.Value = 2;
-        ApplyPlaybackSpeed();
     }
 
     private void Playback_VideoPlayer_MediaEnded(object sender, RoutedEventArgs e)
@@ -73,7 +66,15 @@ public partial class MainWindow
 
     private void PlaybackUiTimer_Tick(object? sender, EventArgs e)
     {
-        if (!_mediaReady || _isScrubbing)
+        // Composite is a static inspection view. Keep the hidden MediaElement paused so
+        // it does not consume CPU after an export or other code path restarts playback.
+        if (ShouldPauseVideoForComposite)
+        {
+            VideoPlayer.Pause();
+            return;
+        }
+
+        if (!_mediaReady || _isScrubbing || !IsLoopPreviewMode)
         {
             return;
         }
@@ -132,7 +133,7 @@ public partial class MainWindow
 
     private void TimelineSlider_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (!_mediaReady || !TimelineSlider.IsEnabled || _exporting)
+        if (!_mediaReady || !TimelineSlider.IsEnabled || _exporting || !IsLoopPreviewMode)
         {
             return;
         }
@@ -154,7 +155,7 @@ public partial class MainWindow
 
     private void TimelineSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (!_isScrubbing || !_mediaReady || _mediaDuration <= TimeSpan.Zero)
+        if (!_isScrubbing || !_mediaReady || _mediaDuration <= TimeSpan.Zero || !IsLoopPreviewMode)
         {
             return;
         }
@@ -172,7 +173,7 @@ public partial class MainWindow
         SeekToTimelineValue();
         _isScrubbing = false;
 
-        if (_resumeAfterScrub && _mediaReady && !_exporting)
+        if (_resumeAfterScrub && _mediaReady && !_exporting && IsLoopPreviewMode)
         {
             VideoPlayer.Play();
         }
@@ -197,32 +198,6 @@ public partial class MainWindow
         UpdateTimeReadout(position);
     }
 
-    private void SpeedSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (SpeedValueText is null || VideoPlayer is null)
-        {
-            return;
-        }
-
-        ApplyPlaybackSpeed();
-    }
-
-    private void ApplyPlaybackSpeed()
-    {
-        var index = Math.Clamp(
-            (int)Math.Round(SpeedSlider.Value),
-            0,
-            PlaybackSpeeds.Length - 1);
-        var speed = PlaybackSpeeds[index];
-
-        SpeedValueText.Text = FormatPlaybackSpeed(speed);
-
-        if (_mediaReady)
-        {
-            VideoPlayer.SpeedRatio = speed;
-        }
-    }
-
     private void UpdateTimeReadout(TimeSpan position)
     {
         var duration = _mediaDuration > TimeSpan.Zero
@@ -242,19 +217,5 @@ public partial class MainWindow
         return time.TotalHours >= 1
             ? $"{(int)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}"
             : $"{(int)time.TotalMinutes}:{time.Seconds:00}";
-    }
-
-    private static string FormatPlaybackSpeed(double speed)
-    {
-        return speed switch
-        {
-            0.25 => "0.25×",
-            0.5 => "0.5×",
-            1.0 => "1×",
-            2.0 => "2×",
-            4.0 => "4×",
-            10.0 => "10×",
-            _ => $"{speed:0.##}×"
-        };
     }
 }

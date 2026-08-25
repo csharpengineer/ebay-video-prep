@@ -91,6 +91,36 @@
                                       MediaFailed="VideoPlayer_MediaFailed" />
                     </Canvas>
 
+                    <!--
+                        Composite frames are generated already upright. Uniform stretch gives them the
+                        same centered display rectangle used by the crop overlay.
+                    -->
+                    <Image x:Name="CompositeImage"
+                           Stretch="Uniform"
+                           Visibility="Collapsed"
+                           IsHitTestVisible="False" />
+
+                    <Border x:Name="CompositeBusyBorder"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Top"
+                            Margin="0,14,0,0"
+                            Padding="12,7"
+                            CornerRadius="5"
+                            Background="#CC111417"
+                            Visibility="Collapsed"
+                            Panel.ZIndex="4">
+                        <StackPanel Orientation="Horizontal">
+                            <ProgressBar Width="70"
+                                         Height="8"
+                                         IsIndeterminate="True"
+                                         Margin="0,0,10,0" />
+                            <TextBlock x:Name="CompositeBusyText"
+                                       Text="Building composite view..."
+                                       Foreground="White"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Border>
+
                     <TextBlock x:Name="DropHint"
                                Text="Drop an MP4 or MOV here&#x0a;or click Open Video"
                                Foreground="#D9DEE3"
@@ -207,68 +237,70 @@
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="24" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="150" />
-                    <ColumnDefinition Width="55" />
+                    <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
 
                 <TextBlock Grid.Column="0"
-                           Text="Position"
+                           Text="View"
                            VerticalAlignment="Center"
-                           Foreground="#59636E" />
+                           Foreground="#59636E"
+                           Margin="0,0,10,0" />
 
-                <Slider x:Name="TimelineSlider"
-                        Grid.Column="1"
-                        Minimum="0"
-                        Maximum="1"
-                        Value="0"
-                        IsEnabled="False"
-                        Margin="10,0"
-                        VerticalAlignment="Center"
-                        PreviewMouseLeftButtonDown="TimelineSlider_PreviewMouseLeftButtonDown"
-                        PreviewMouseLeftButtonUp="TimelineSlider_PreviewMouseLeftButtonUp"
-                        LostMouseCapture="TimelineSlider_LostMouseCapture"
-                        ValueChanged="TimelineSlider_ValueChanged" />
+                <RadioButton x:Name="CompositeModeRadio"
+                             Grid.Column="1"
+                             GroupName="PreviewMode"
+                             Content="Composite"
+                             IsChecked="True"
+                             VerticalAlignment="Center"
+                             Margin="0,0,12,0"
+                             ToolTip="Average one frame per second (up to 2 minutes) to show the full turntable motion envelope."
+                             Click="CompositeMode_Click" />
 
-                <TextBlock x:Name="TimeReadoutText"
-                           Grid.Column="2"
-                           Text="0:00 / 0:00"
-                           MinWidth="95"
-                           TextAlignment="Right"
-                           VerticalAlignment="Center"
-                           Foreground="#59636E" />
+                <RadioButton x:Name="LoopModeRadio"
+                             Grid.Column="2"
+                             GroupName="PreviewMode"
+                             Content="Loop"
+                             VerticalAlignment="Center"
+                             Click="LoopMode_Click" />
 
-                <TextBlock Grid.Column="4"
-                           Text="Speed"
-                           VerticalAlignment="Center"
-                           Foreground="#59636E" />
+                <Grid x:Name="TimelinePanel"
+                      Grid.Column="4"
+                      Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
-                <!-- Declared before SpeedSlider so it exists if ValueChanged fires during XAML load. -->
-                <TextBlock x:Name="SpeedValueText"
-                           Grid.Column="6"
-                           Text="1×"
-                           Margin="10,0,0,0"
-                           TextAlignment="Right"
-                           VerticalAlignment="Center"
-                           FontWeight="SemiBold"
-                           Foreground="#303840" />
+                    <TextBlock Grid.Column="0"
+                               Text="Position"
+                               VerticalAlignment="Center"
+                               Foreground="#59636E" />
 
-                <Slider x:Name="SpeedSlider"
-                        Grid.Column="5"
-                        Minimum="0"
-                        Maximum="5"
-                        Value="2"
-                        TickFrequency="1"
-                        TickPlacement="BottomRight"
-                        IsSnapToTickEnabled="True"
-                        IsEnabled="False"
-                        Margin="10,0,0,0"
-                        VerticalAlignment="Center"
-                        ToolTip="0.25× · 0.5× · 1× · 2× · 4× · 10×"
-                        ValueChanged="SpeedSlider_ValueChanged" />
+                    <Slider x:Name="TimelineSlider"
+                            Grid.Column="1"
+                            Minimum="0"
+                            Maximum="1"
+                            Value="0"
+                            IsEnabled="False"
+                            Margin="10,0"
+                            VerticalAlignment="Center"
+                            PreviewMouseLeftButtonDown="TimelineSlider_PreviewMouseLeftButtonDown"
+                            PreviewMouseLeftButtonUp="TimelineSlider_PreviewMouseLeftButtonUp"
+                            LostMouseCapture="TimelineSlider_LostMouseCapture"
+                            ValueChanged="TimelineSlider_ValueChanged" />
+
+                    <TextBlock x:Name="TimeReadoutText"
+                               Grid.Column="2"
+                               Text="0:00 / 0:00"
+                               MinWidth="95"
+                               TextAlignment="Right"
+                               VerticalAlignment="Center"
+                               Foreground="#59636E" />
+                </Grid>
             </Grid>
         </Border>
 

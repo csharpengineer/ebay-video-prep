@@ -2,16 +2,18 @@
 
 A small Windows utility for preparing product videos for eBay listings.
 
-Drag in an MP4 or MOV, preview it continuously, scrub through the recording, adjust playback speed, position and resize a visual crop box, and export a cropped, muted H.264 MP4 suitable for upload to eBay.
+Drag in an MP4 or MOV, use a turntable-friendly composite preview to find the right crop quickly, switch to a looping video when needed, and export a cropped, muted H.264 MP4 suitable for upload to eBay.
 
 ## Goals
 
 - Drag-and-drop or open a video file.
-- Loop the video continuously while editing.
-- Scrub backward and forward with a timeline slider and current/total time readout.
-- Inspect footage at 0.25×, 0.5×, 1×, 2×, 4×, or 10× playback speed.
+- Default to **Composite View** for fast crop setup on turntable recordings.
+- Build the composite from one frame per second, up to the first 120 seconds.
+- Average the sampled frames so static background/turntable areas remain stable while the rotating item shows its overall motion envelope.
+- Switch to **Loop View** when live playback is useful.
+- Scrub backward and forward through the loop with a timeline slider.
 - Honor phone display-rotation metadata so portrait recordings preview upright.
-- Move and resize a transparent crop rectangle directly over the preview.
+- Move and resize a transparent crop rectangle directly over either preview mode.
 - Quickly reset to the full frame or choose a centered square crop.
 - Export to MP4/H.264 with audio removed.
 - Keep the output within a 1920x1080 bounding box without upscaling.
@@ -43,14 +45,19 @@ dotnet build .\EbayVideoPrep.sln -c Release
 1. Launch **eBay Video Prep**.
 2. Drag an `.mp4` or `.mov` into the window, or click **Open Video**.
 3. The app reads the video's display orientation and shows phone footage upright when rotation metadata is present.
-4. Drag the **Position** slider to scrub backward or forward through the recording.
-5. Use the **Speed** slider to inspect the preview at 0.25×, 0.5×, 1×, 2×, 4×, or 10×. Playback speed affects preview only; exports keep the recording's original timing.
-6. Drag inside the crop rectangle to move it.
-7. Drag an edge or corner handle to resize it.
-8. Click **Save eBay MP4**.
-9. Choose the output filename.
+4. **Composite View** is selected by default. The live video remains visible briefly while FFmpeg builds an average from one frame per second (maximum 120 frames).
+5. Use the ghosted composite to place the crop around the item's full turntable motion.
+6. Switch to **Loop** if you want to inspect the original moving video; use the timeline to scrub to any point.
+7. Drag inside the crop rectangle to move it, or drag an edge/corner handle to resize it.
+8. Click **Save eBay MP4** and choose the output filename.
 
-The export is re-encoded as H.264 because cropping requires re-encoding. Audio is removed, the output pixel format is broadly compatible `yuv420p`, and `faststart` is enabled for web playback. Crop coordinates are calculated against the display-oriented frame so portrait phone footage exports the same region shown in the preview.
+The composite is only a preview aid and is never written into the exported video. Export keeps the original timing, re-encodes as H.264 because cropping requires re-encoding, removes audio, uses broadly compatible `yuv420p`, and enables `faststart` for web playback. Crop coordinates are calculated against the display-oriented frame so portrait phone footage exports the same region shown in the preview.
+
+## Composite View
+
+Composite View is aimed primarily at videos recorded with a stationary camera and turntable. FFmpeg samples one upright frame per second and averages those frames together. Static parts of the scene reinforce each other, while the rotating product appears as a ghosted composite showing the area it occupies throughout the recording.
+
+Only the first two minutes are sampled. The generated image is preview-sized (bounded to 1280 pixels on either axis) and kept in memory after generation, so switching between Composite and Loop is immediate after the first build.
 
 ## eBay video constraints
 
@@ -60,9 +67,9 @@ Always check eBay's current documentation if an upload is rejected, since platfo
 
 ## Status
 
-Early MVP. The first version intentionally stays focused on one job: **crop a product video visually and save a quiet, upload-ready copy quickly**.
+Early MVP focused on one job: **find a safe crop for a product video quickly and save a quiet, upload-ready copy**.
 
-Likely follow-up features include batch processing, reusable crop presets, manual rotation correction, duration trimming, and automatic bitrate targeting for the 150 MB limit.
+Likely follow-up features include reusable crop presets, automatic crop suggestions from the composite, manual rotation correction, duration trimming, batch processing, and automatic bitrate targeting for the 150 MB limit.
 
 ## Trademark notice
 
