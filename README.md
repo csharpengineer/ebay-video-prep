@@ -2,12 +2,14 @@
 
 A small Windows utility for preparing product videos for eBay listings.
 
-Drag in an MP4 or MOV, preview it continuously, position and resize a visual crop box, and export a cropped, muted H.264 MP4 suitable for upload to eBay.
+Drag in an MP4 or MOV, preview it continuously, scrub through the recording, adjust playback speed, position and resize a visual crop box, and export a cropped, muted H.264 MP4 suitable for upload to eBay.
 
 ## Goals
 
 - Drag-and-drop or open a video file.
 - Loop the video continuously while editing.
+- Scrub backward and forward with a timeline slider and current/total time readout.
+- Inspect footage at 0.25×, 0.5×, 1×, 2×, 4×, or 10× playback speed.
 - Honor phone display-rotation metadata so portrait recordings preview upright.
 - Move and resize a transparent crop rectangle directly over the preview.
 - Quickly reset to the full frame or choose a centered square crop.
@@ -41,10 +43,12 @@ dotnet build .\EbayVideoPrep.sln -c Release
 1. Launch **eBay Video Prep**.
 2. Drag an `.mp4` or `.mov` into the window, or click **Open Video**.
 3. The app reads the video's display orientation and shows phone footage upright when rotation metadata is present.
-4. Drag inside the crop rectangle to move it.
-5. Drag an edge or corner handle to resize it.
-6. Click **Save eBay MP4**.
-7. Choose the output filename.
+4. Drag the **Position** slider to scrub backward or forward through the recording.
+5. Use the **Speed** slider to inspect the preview at 0.25×, 0.5×, 1×, 2×, 4×, or 10×. Playback speed affects preview only; exports keep the recording's original timing.
+6. Drag inside the crop rectangle to move it.
+7. Drag an edge or corner handle to resize it.
+8. Click **Save eBay MP4**.
+9. Choose the output filename.
 
 The export is re-encoded as H.264 because cropping requires re-encoding. Audio is removed, the output pixel format is broadly compatible `yuv420p`, and `faststart` is enabled for web playback. Crop coordinates are calculated against the display-oriented frame so portrait phone footage exports the same region shown in the preview.
 
