@@ -6,65 +6,142 @@ using System.IO;
 namespace EbayVideoPrep.Services;
 
 /// <summary>
-/// Builds a quick turntable-oriented crop aid. It intentionally favors speed and
-/// a crisp anchor frame over a mathematically even average of the whole video.
+/// Builds a quick turntable crop aid by seeking directly to a handful of timestamps.
+/// Each frame is extracted by a separate FFmpeg process so the app does not have to
+/// decode a contiguous section of high-resolution phone video just to make a preview.
 /// </summary>
 public sealed class FastCompositePreviewService
 {
     private const double MaxSampleSpanSeconds = 10.0;
     private const double StartOffsetSeconds = 0.25;
     private const int PreviewMaxDimension = 720;
-    private const int AnchorWeight = 5;
+    private const int DesiredSampleCount = 4;
+    private static readonly TimeSpan ExtractionBudget = TimeSpan.FromSeconds(6);
 
     public async Task<FastCompositePreviewResult> CreateAsync(
         string inputPath,
-        string outputPath,
+        string outputDirectory,
         TimeSpan duration,
         CancellationToken cancellationToken = default)
     {
-        var ffmpegPath = ResolveToolPath("ffmpeg.exe");
+        Directory.CreateDirectory(outputDirectory);
 
-        var knownDurationSeconds = duration > TimeSpan.Zero
+        var sampleTimes = BuildSampleTimes(duration);
+        using var budgetCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budgetCancellation.CancelAfter(ExtractionBudget);
+
+        // These are intentionally independent input-side seeks. Running them together is
+        // much faster for phone footage than decoding the first ten seconds in sequence.
+        var attempts = sampleTimes
+            .Select((timestamp, index) => ExtractFrameSafelyAsync(
+                inputPath,
+                Path.Combine(outputDirectory, $"frame-{index + 1:00}.jpg"),
+                timestamp,
+                budgetCancellation.Token,
+                cancellationToken))
+            .ToArray();
+
+        var results = await Task.WhenAll(attempts);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var frames = results
+            .Where(result => result.Frame is not null)
+            .Select(result => result.Frame!.Value)
+            .OrderBy(frame => frame.TimestampSeconds)
+            .ToArray();
+
+        // Two distinct views are enough to provide some motion-envelope information.
+        // Keep partial results rather than throwing away three good frames because a
+        // fourth seek happened to be slow on a particular codec.
+        if (frames.Length < 2)
+        {
+            var diagnostic = results
+                .Select(result => result.Error)
+                .FirstOrDefault(error => !string.IsNullOrWhiteSpace(error));
+
+            throw new InvalidOperationException(
+                "Fast composite could not extract at least two preview frames within " +
+                $"{ExtractionBudget.TotalSeconds:0} seconds." +
+                (diagnostic is null ? string.Empty : $"\n\n{diagnostic}"));
+        }
+
+        var spanSeconds = frames[^1].TimestampSeconds - frames[0].TimestampSeconds;
+        return new FastCompositePreviewResult(
+            frames,
+            sampleTimes.Length,
+            Math.Max(0, spanSeconds));
+    }
+
+    private static double[] BuildSampleTimes(TimeSpan duration)
+    {
+        var knownDuration = duration > TimeSpan.Zero
             ? duration.TotalSeconds
             : MaxSampleSpanSeconds + StartOffsetSeconds;
 
-        var startOffset = knownDurationSeconds > 0.75
-            ? StartOffsetSeconds
-            : 0.0;
-        var remainingSeconds = Math.Max(0.1, knownDurationSeconds - startOffset);
-        var sampleSpanSeconds = Math.Min(remainingSeconds, MaxSampleSpanSeconds);
-
-        // Four snapshots are enough to expose front/side/back crop extents for the
-        // common 3-4 RPM turntables this app is aimed at. Very short clips use fewer.
-        var sampleCount = sampleSpanSeconds switch
+        if (knownDuration <= 0.25)
         {
-            < 0.75 => 2,
-            < 1.5 => 3,
-            _ => 4
+            return [0.0, Math.Max(0.05, knownDuration * 0.8)];
+        }
+
+        var start = Math.Min(StartOffsetSeconds, knownDuration * 0.1);
+        var endMargin = Math.Min(0.25, knownDuration * 0.05);
+        var end = Math.Min(MaxSampleSpanSeconds, Math.Max(start + 0.1, knownDuration - endMargin));
+        var span = Math.Max(0.1, end - start);
+
+        var sampleCount = span switch
+        {
+            < 1.0 => 2,
+            < 2.5 => 3,
+            _ => DesiredSampleCount
         };
 
-        // Leave a little room before EOF so the final sample is reliably available.
-        var endMargin = Math.Min(0.25, sampleSpanSeconds * 0.1);
-        var coveredSpanSeconds = Math.Max(0.05, sampleSpanSeconds - endMargin);
-        var sampleIntervalSeconds = sampleCount > 1
-            ? coveredSpanSeconds / (sampleCount - 1)
-            : coveredSpanSeconds;
+        return Enumerable.Range(0, sampleCount)
+            .Select(index => sampleCount == 1
+                ? start
+                : start + (span * index / (sampleCount - 1)))
+            .ToArray();
+    }
 
-        var intervalText = sampleIntervalSeconds.ToString("0.######", CultureInfo.InvariantCulture);
-        var weights = string.Join(' ', Enumerable.Range(0, sampleCount)
-            .Select(index => index == 0 ? AnchorWeight.ToString(CultureInfo.InvariantCulture) : "1"));
+    private async Task<FrameAttempt> ExtractFrameSafelyAsync(
+        string inputPath,
+        string outputPath,
+        double timestampSeconds,
+        CancellationToken extractionToken,
+        CancellationToken callerToken)
+    {
+        try
+        {
+            await ExtractFrameAsync(
+                inputPath,
+                outputPath,
+                timestampSeconds,
+                extractionToken);
 
-        // select happens before scale/tmix, so FFmpeg decodes only the short beginning
-        // of the clip and does expensive image work on just 2-4 frames. The first
-        // selected frame gets a strong weight, keeping the product recognizable while
-        // later angles appear as light ghosts around its motion envelope.
-        var filter =
-            $"select='isnan(prev_selected_t)+gte(t-prev_selected_t,{intervalText})'," +
-            $"scale=w='min(iw,{PreviewMaxDimension})':h='min(ih,{PreviewMaxDimension})':" +
-            "force_original_aspect_ratio=decrease:force_divisible_by=2," +
-            $"tmix=frames={sampleCount}:weights='{weights}'," +
-            $"select='eq(n,{sampleCount - 1})'";
+            return new FrameAttempt(
+                new FastCompositeFrame(outputPath, timestampSeconds),
+                null);
+        }
+        catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
+        {
+            return new FrameAttempt(
+                null,
+                $"The seek near {timestampSeconds:0.##} seconds did not finish in time.");
+        }
+        catch (Exception ex)
+        {
+            return new FrameAttempt(
+                null,
+                $"The seek near {timestampSeconds:0.##} seconds failed: {ex.Message}");
+        }
+    }
 
+    private static async Task ExtractFrameAsync(
+        string inputPath,
+        string outputPath,
+        double timestampSeconds,
+        CancellationToken cancellationToken)
+    {
+        var ffmpegPath = ResolveToolPath("ffmpeg.exe");
         var startInfo = new ProcessStartInfo
         {
             FileName = ffmpegPath,
@@ -75,20 +152,29 @@ public sealed class FastCompositePreviewService
             WorkingDirectory = Path.GetDirectoryName(inputPath) ?? AppContext.BaseDirectory
         };
 
+        // -ss is deliberately before -i. That lets FFmpeg seek through the container to
+        // a nearby keyframe instead of decoding every frame from the beginning. A tiny
+        // amount of decode after the keyframe is acceptable because crop assistance does
+        // not require frame-perfect timestamps.
         string[] arguments =
         [
             "-y",
+            "-nostdin",
             "-hide_banner",
             "-loglevel", "error",
-            "-ss", startOffset.ToString("0.###", CultureInfo.InvariantCulture),
+            "-ss", timestampSeconds.ToString("0.###", CultureInfo.InvariantCulture),
             "-i", inputPath,
-            "-t", sampleSpanSeconds.ToString("0.###", CultureInfo.InvariantCulture),
             "-map", "0:v:0",
-            "-vf", filter,
             "-frames:v", "1",
+            "-sws_flags", "fast_bilinear",
+            "-vf", $"scale=w='min(iw,{PreviewMaxDimension})':h='min(ih,{PreviewMaxDimension})':" +
+                   "force_original_aspect_ratio=decrease:force_divisible_by=2",
             "-an",
+            "-sn",
+            "-dn",
             "-map_metadata", "-1",
-            "-compression_level", "2",
+            "-q:v", "4",
+            "-update", "1",
             outputPath
         ];
 
@@ -106,7 +192,7 @@ public sealed class FastCompositePreviewService
         catch (Win32Exception ex)
         {
             throw new InvalidOperationException(
-                "FFmpeg could not be started to build the composite preview. Install FFmpeg with " +
+                "FFmpeg could not be started to extract a composite preview frame. Install FFmpeg with " +
                 "'winget install --id Gyan.FFmpeg -e', or place ffmpeg.exe next to the application.",
                 ex);
         }
@@ -130,16 +216,13 @@ public sealed class FastCompositePreviewService
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                $"FFmpeg could not build the composite preview (exit code {process.ExitCode}).\n\n" +
-                TrimDiagnostic(standardError));
+                $"FFmpeg exited with code {process.ExitCode}. {TrimDiagnostic(standardError)}");
         }
 
         if (!File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
         {
-            throw new InvalidOperationException("FFmpeg completed without producing a composite preview image.");
+            throw new InvalidOperationException("FFmpeg completed without producing a preview frame.");
         }
-
-        return new FastCompositePreviewResult(sampleCount, coveredSpanSeconds);
     }
 
     private static string ResolveToolPath(string executableName)
@@ -190,20 +273,31 @@ public sealed class FastCompositePreviewService
         }
         catch
         {
-            // Cancellation cleanup is best effort.
+            // Timeout/cancellation cleanup is best effort.
         }
     }
 
     private static string TrimDiagnostic(string text)
     {
-        const int maxLength = 3000;
-        if (text.Length <= maxLength)
+        const int maxLength = 1200;
+        var trimmed = text.Trim();
+        if (trimmed.Length <= maxLength)
         {
-            return text;
+            return trimmed;
         }
 
-        return "..." + text[^maxLength..];
+        return "..." + trimmed[^maxLength..];
     }
+
+    private readonly record struct FrameAttempt(FastCompositeFrame? Frame, string? Error);
 }
 
-public readonly record struct FastCompositePreviewResult(int SampleCount, double SampleSpanSeconds);
+public readonly record struct FastCompositeFrame(string Path, double TimestampSeconds);
+
+public sealed record FastCompositePreviewResult(
+    IReadOnlyList<FastCompositeFrame> Frames,
+    int RequestedSampleCount,
+    double SampleSpanSeconds)
+{
+    public int SampleCount => Frames.Count;
+}

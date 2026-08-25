@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using EbayVideoPrep.Services;
 
@@ -102,8 +103,7 @@ public partial class MainWindow
             }
             else
             {
-                // Keep the live preview visible while the composite is being built so
-                // the crop can still be adjusted immediately instead of blocking the user.
+                // Keep the live preview usable while the independent frame seeks run.
                 CompositeImage.Visibility = Visibility.Collapsed;
                 VideoCanvas.Visibility = Visibility.Visible;
                 CompositeBusyBorder.Visibility = _compositeGenerating
@@ -143,11 +143,7 @@ public partial class MainWindow
 
         var inputPath = _inputPath;
         var loadGeneration = _loadGeneration;
-
-        // A crop aid is only useful if it arrives quickly. If FFmpeg cannot build the
-        // fast composite within ten seconds, fall back to Loop rather than making the
-        // user wait through a long background job.
-        var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var cancellation = new CancellationTokenSource();
         _compositeCancellation = cancellation;
         _compositeGenerating = true;
         _compositeReady = false;
@@ -157,19 +153,18 @@ public partial class MainWindow
             ? VideoPlayer.NaturalDuration.TimeSpan
             : TimeSpan.FromSeconds(10);
 
-        CompositeBusyText.Text = "Building fast turntable composite...";
+        CompositeBusyText.Text = "Grabbing turntable snapshots...";
         ApplyPreviewMode();
 
         if (CompositeModeRadio.IsChecked == true)
         {
-            StatusText.Text = "Building a fast composite from a few turntable angles...";
+            StatusText.Text = "Building composite from parallel fast-seek snapshots...";
         }
 
         var tempDirectory = Path.Combine(
             Path.GetTempPath(),
             "EbayVideoPrep",
             Guid.NewGuid().ToString("N"));
-        var compositePath = Path.Combine(tempDirectory, "composite.png");
 
         try
         {
@@ -177,7 +172,7 @@ public partial class MainWindow
 
             var result = await _compositePreviewService.CreateAsync(
                 inputPath,
-                compositePath,
+                tempDirectory,
                 duration,
                 cancellation.Token);
 
@@ -188,33 +183,25 @@ public partial class MainWindow
                 return;
             }
 
-            var bitmap = LoadBitmap(compositePath);
+            var bitmap = BuildGhostComposite(result.Frames);
             CompositeImage.Source = bitmap;
             _compositeReady = true;
             _compositeGenerating = false;
 
             ApplyPreviewMode();
 
+            var partialText = result.SampleCount < result.RequestedSampleCount
+                ? $" ({result.SampleCount} of {result.RequestedSampleCount} seeks completed)"
+                : string.Empty;
+
             StatusText.Text =
-                $"Composite ready from {result.SampleCount} fast snapshots across " +
-                $"{result.SampleSpanSeconds:0.#} seconds. Adjust the crop to cover the item's full motion, then save.";
+                $"Composite ready from {result.SampleCount} direct snapshots across " +
+                $"{result.SampleSpanSeconds:0.#} seconds{partialText}. " +
+                "Adjust the crop to cover the item's full motion, then save.";
         }
         catch (OperationCanceledException)
         {
-            // If this exact generation timed out, stop asking the user to wait and show
-            // the live loop instead. Cancellation caused by opening another file or
-            // closing the app clears _compositeCancellation first and needs no UI work.
-            if (ReferenceEquals(_compositeCancellation, cancellation) &&
-                loadGeneration == _loadGeneration &&
-                string.Equals(inputPath, _inputPath, StringComparison.OrdinalIgnoreCase))
-            {
-                _compositeGenerating = false;
-                _compositeReady = false;
-                CompositeModeRadio.IsChecked = false;
-                LoopModeRadio.IsChecked = true;
-                ApplyPreviewMode();
-                StatusText.Text = "Composite took more than 10 seconds; showing Loop instead.";
-            }
+            // Expected when another file is opened or the application closes.
         }
         catch (Exception ex)
         {
@@ -227,11 +214,12 @@ public partial class MainWindow
             _compositeReady = false;
             _compositeError = ex.Message;
 
-            // Fall back to the loop view rather than leaving a broken default mode selected.
+            // If fewer than two fast seeks succeed, the live loop is more useful than a
+            // single still frame pretending to be a motion composite.
             CompositeModeRadio.IsChecked = false;
             LoopModeRadio.IsChecked = true;
             ApplyPreviewMode();
-            StatusText.Text = $"Composite view could not be built; showing Loop instead. {ex.Message}";
+            StatusText.Text = $"Fast composite unavailable; showing Loop instead. {ex.Message}";
         }
         finally
         {
@@ -251,7 +239,8 @@ public partial class MainWindow
             }
             catch
             {
-                // Temporary preview cleanup is best effort only.
+                // Temporary thumbnail cleanup is best effort only. BitmapCacheOption.OnLoad
+                // means successful images no longer hold the files open at this point.
             }
         }
     }
@@ -273,6 +262,56 @@ public partial class MainWindow
         }
 
         _compositeCancellation = null;
+    }
+
+    private static BitmapSource BuildGhostComposite(IReadOnlyList<FastCompositeFrame> frames)
+    {
+        var bitmaps = frames
+            .Select(frame => LoadBitmap(frame.Path))
+            .ToArray();
+
+        if (bitmaps.Length == 0)
+        {
+            throw new InvalidOperationException("No extracted preview frames were available to compose.");
+        }
+
+        var width = bitmaps[0].PixelWidth;
+        var height = bitmaps[0].PixelHeight;
+        if (width <= 0 || height <= 0)
+        {
+            throw new InvalidOperationException("The extracted preview frame had invalid dimensions.");
+        }
+
+        var bounds = new Rect(0, 0, width, height);
+        var visual = new DrawingVisual();
+        RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.HighQuality);
+
+        using (var drawing = visual.RenderOpen())
+        {
+            // Keep the earliest view recognizable, then layer alternate turntable angles
+            // lightly over it. Sequential alpha blending gives the anchor roughly 60% of
+            // the final visual weight with all four frames present.
+            drawing.DrawImage(bitmaps[0], bounds);
+
+            double[] ghostOpacities = [0.18, 0.15, 0.12];
+            for (var index = 1; index < bitmaps.Length; index++)
+            {
+                var opacity = ghostOpacities[Math.Min(index - 1, ghostOpacities.Length - 1)];
+                drawing.PushOpacity(opacity);
+                drawing.DrawImage(bitmaps[index], bounds);
+                drawing.Pop();
+            }
+        }
+
+        var render = new RenderTargetBitmap(
+            width,
+            height,
+            96,
+            96,
+            PixelFormats.Pbgra32);
+        render.Render(visual);
+        render.Freeze();
+        return render;
     }
 
     private static BitmapSource LoadBitmap(string path)

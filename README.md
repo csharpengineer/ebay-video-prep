@@ -8,9 +8,10 @@ Drag in an MP4 or MOV, use a turntable-friendly composite preview to find the ri
 
 - Drag-and-drop or open a video file.
 - Default to **Composite View** for fast crop setup on turntable recordings.
-- Build the composite from only a few snapshots across roughly the first 10 seconds instead of averaging the whole clip.
+- Build the composite from a few direct point-seek snapshots rather than decoding a continuous chunk of the video.
+- Extract up to four preview frames in parallel using FFmpeg input-side seeking.
 - Keep the first sampled angle crisp and dominant while later angles appear as light ghosts showing the product's motion envelope.
-- Fall back to **Loop View** rather than making the user wait if a composite takes more than 10 seconds.
+- Keep partial composites when 2-3 of the requested snapshots succeed instead of discarding all useful work.
 - Switch to **Loop View** when live playback is useful.
 - Scrub backward and forward through the loop with a timeline slider.
 - Honor phone display-rotation metadata so portrait recordings preview upright.
@@ -46,8 +47,8 @@ dotnet build .\EbayVideoPrep.sln -c Release
 1. Launch **eBay Video Prep**.
 2. Drag an `.mp4` or `.mov` into the window, or click **Open Video**.
 3. The app reads the video's display orientation and shows phone footage upright when rotation metadata is present.
-4. **Composite View** is selected by default. The live video remains usable while FFmpeg quickly samples a few early turntable angles.
-5. Use the weighted ghost composite to place the crop around the item's full turntable motion.
+4. **Composite View** is selected by default. The live video remains usable while the app grabs a few direct snapshots in parallel.
+5. Use the ghost composite to place the crop around the item's full turntable motion.
 6. Switch to **Loop** if you want to inspect the original moving video; use the timeline to scrub to any point.
 7. Drag inside the crop rectangle to move it, or drag an edge/corner handle to resize it.
 8. Click **Save eBay MP4** and choose the output filename.
@@ -56,11 +57,13 @@ The composite is only a preview aid and is never written into the exported video
 
 ## Composite View
 
-Composite View is aimed primarily at videos recorded with a stationary camera and a roughly 3-4 RPM turntable. The current implementation examines at most about the first 10 seconds and selects up to four frames spaced across that span.
+Composite View is aimed primarily at videos recorded with a stationary camera and a roughly 3-4 RPM turntable. The app chooses up to four timestamps spread across roughly the first 10 seconds of the recording.
 
-The first sampled frame receives most of the visual weight, so the product stays recognizable instead of becoming a pale equal-weight average. The other sampled angles are blended in as lighter ghosts, making width, side profiles, protrusions, and other crop-critical motion easier to see.
+Each timestamp is extracted by its own FFmpeg process with `-ss` placed before `-i`. This uses container/keyframe seeking instead of decoding every preceding frame. The point seeks run concurrently, and each thumbnail is scaled to a maximum of 720 pixels on either axis.
 
-Frame selection happens before scaling and mixing, so the expensive image filters run on only a handful of frames. The preview is bounded to 720 pixels on either axis. If generation still exceeds 10 seconds on a machine or codec, the app cancels it and switches to Loop rather than holding up the workflow.
+The first successful frame is drawn normally. Later turntable angles are layered over it at low opacity, so the product remains recognizable while side profiles, protrusions, and other crop-critical motion appear as ghosts around the anchor view.
+
+The frame-grab stage has a short time budget. If two or three snapshots finish while another seek is slow, the app uses the successful frames rather than throwing the whole composite away. If fewer than two frames are available, it falls back to Loop because a single still image does not provide meaningful motion-envelope information.
 
 The generated composite is kept in memory after generation, so switching between Composite and Loop is immediate after the first build.
 
