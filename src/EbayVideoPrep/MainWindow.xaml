@@ -69,15 +69,24 @@
                     ClipToBounds="True">
                 <Grid x:Name="PreviewHost"
                       SizeChanged="PreviewHost_SizeChanged">
-                    <MediaElement x:Name="VideoPlayer"
-                                  Stretch="Uniform"
-                                  LoadedBehavior="Manual"
-                                  UnloadedBehavior="Manual"
-                                  ScrubbingEnabled="True"
-                                  IsMuted="True"
-                                  MediaOpened="VideoPlayer_MediaOpened"
-                                  MediaEnded="VideoPlayer_MediaEnded"
-                                  MediaFailed="VideoPlayer_MediaFailed" />
+                    <!--
+                        MediaElement does not consistently honor MP4/MOV display-rotation metadata.
+                        Keep it in a Canvas so code-behind can explicitly size, position, and rotate
+                        the stored video frame while the crop overlay uses display-oriented geometry.
+                    -->
+                    <Canvas x:Name="VideoCanvas"
+                            IsHitTestVisible="False">
+                        <MediaElement x:Name="VideoPlayer"
+                                      Stretch="Fill"
+                                      LoadedBehavior="Manual"
+                                      UnloadedBehavior="Manual"
+                                      ScrubbingEnabled="True"
+                                      IsMuted="True"
+                                      RenderTransformOrigin="0.5,0.5"
+                                      MediaOpened="VideoPlayer_MediaOpened"
+                                      MediaEnded="VideoPlayer_MediaEnded"
+                                      MediaFailed="VideoPlayer_MediaFailed" />
+                    </Canvas>
 
                     <TextBlock x:Name="DropHint"
                                Text="Drop an MP4 or MOV here&#x0a;or click Open Video"
@@ -111,10 +120,10 @@
                                 IsHitTestVisible="False"
                                 Panel.ZIndex="5" />
 
+                        <!-- Opacity=0 keeps the whole crop interior draggable without painting it. -->
                         <primitives:Thumb x:Name="MoveThumb"
                                           Cursor="SizeAll"
-                                          Background="Transparent"
-                                          BorderThickness="0"
+                                          Opacity="0"
                                           DragDelta="MoveThumb_DragDelta"
                                           Panel.ZIndex="6" />
 

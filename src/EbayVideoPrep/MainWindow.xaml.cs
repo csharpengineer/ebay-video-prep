@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
 using EbayVideoPrep.Models;
 using EbayVideoPrep.Services;
 using Microsoft.Win32;
@@ -18,10 +19,16 @@ public partial class MainWindow : Window
     private string? _inputPath;
     private int _sourceWidth;
     private int _sourceHeight;
+    private int _displayWidth;
+    private int _displayHeight;
+    private int _clockwiseRotationDegrees;
+    private int _loadGeneration;
     private bool _mediaReady;
     private bool _exporting;
+    private string? _probeWarning;
 
-    // Stored as fractions of the source frame so the crop remains stable as the window resizes.
+    // Stored as fractions of the display-oriented frame so the crop remains stable
+    // as the window resizes and matches the upright frame FFmpeg crops on export.
     private Rect _normalizedCrop = new(0, 0, 1, 1);
     private Rect _videoDisplayRect = Rect.Empty;
 
@@ -89,26 +96,67 @@ public partial class MainWindow : Window
                extension.Equals(".mov", StringComparison.OrdinalIgnoreCase);
     }
 
-    private void LoadVideo(string path)
+    private async void LoadVideo(string path)
     {
         if (_exporting)
         {
             return;
         }
 
+        var loadGeneration = ++_loadGeneration;
+
         _inputPath = Path.GetFullPath(path);
         _mediaReady = false;
         _sourceWidth = 0;
         _sourceHeight = 0;
+        _displayWidth = 0;
+        _displayHeight = 0;
+        _clockwiseRotationDegrees = 0;
+        _probeWarning = null;
         _normalizedCrop = new Rect(0, 0, 1, 1);
+        _videoDisplayRect = Rect.Empty;
 
         SaveButton.IsEnabled = false;
         CropCanvas.Visibility = Visibility.Collapsed;
         DropHint.Visibility = Visibility.Collapsed;
         CropInfoText.Text = "Loading...";
-        StatusText.Text = $"Loading {Path.GetFileName(_inputPath)}...";
+        StatusText.Text = $"Reading video orientation for {Path.GetFileName(_inputPath)}...";
 
         VideoPlayer.Stop();
+        VideoPlayer.Source = null;
+        VideoPlayer.RenderTransform = Transform.Identity;
+
+        try
+        {
+            var probe = await _ffmpegService.ProbeAsync(_inputPath);
+            if (loadGeneration != _loadGeneration)
+            {
+                return;
+            }
+
+            _sourceWidth = probe.Width;
+            _sourceHeight = probe.Height;
+            _clockwiseRotationDegrees = probe.ClockwiseRotationDegrees;
+            ConfigureDisplayDimensions();
+        }
+        catch (Exception ex)
+        {
+            if (loadGeneration != _loadGeneration)
+            {
+                return;
+            }
+
+            // Preview can still work without FFprobe. NaturalVideoWidth/Height will be
+            // used when MediaElement opens, but orientation metadata may be unavailable.
+            _probeWarning = ex.Message;
+        }
+
+        if (loadGeneration != _loadGeneration)
+        {
+            return;
+        }
+
+        StatusText.Text = $"Loading {Path.GetFileName(_inputPath)}...";
         VideoPlayer.Source = new Uri(_inputPath, UriKind.Absolute);
         VideoPlayer.Position = TimeSpan.Zero;
         VideoPlayer.Play();
@@ -116,10 +164,16 @@ public partial class MainWindow : Window
 
     private void VideoPlayer_MediaOpened(object sender, RoutedEventArgs e)
     {
-        _sourceWidth = VideoPlayer.NaturalVideoWidth;
-        _sourceHeight = VideoPlayer.NaturalVideoHeight;
-
         if (_sourceWidth <= 0 || _sourceHeight <= 0)
+        {
+            _sourceWidth = VideoPlayer.NaturalVideoWidth;
+            _sourceHeight = VideoPlayer.NaturalVideoHeight;
+            _clockwiseRotationDegrees = 0;
+            ConfigureDisplayDimensions();
+        }
+
+        if (_sourceWidth <= 0 || _sourceHeight <= 0 ||
+            _displayWidth <= 0 || _displayHeight <= 0)
         {
             HandleMediaError("Windows could not determine the video's frame dimensions.");
             return;
@@ -133,10 +187,34 @@ public partial class MainWindow : Window
         UpdateCropVisuals();
 
         SaveButton.IsEnabled = true;
-        StatusText.Text = $"{Path.GetFileName(_inputPath)} — {_sourceWidth}×{_sourceHeight}. Drag the crop box, then save.";
+
+        var orientationText = _clockwiseRotationDegrees == 0
+            ? $"{_displayWidth}×{_displayHeight}"
+            : $"{_displayWidth}×{_displayHeight} display (stored {_sourceWidth}×{_sourceHeight}, rotate {_clockwiseRotationDegrees}°)";
+
+        StatusText.Text = $"{Path.GetFileName(_inputPath)} — {orientationText}. Drag the crop box, then save.";
+
+        if (_probeWarning is not null)
+        {
+            StatusText.Text += " Orientation metadata could not be read; previewing the stored frame as-is.";
+        }
 
         VideoPlayer.Position = TimeSpan.Zero;
         VideoPlayer.Play();
+    }
+
+    private void ConfigureDisplayDimensions()
+    {
+        if (_clockwiseRotationDegrees is 90 or 270)
+        {
+            _displayWidth = _sourceHeight;
+            _displayHeight = _sourceWidth;
+        }
+        else
+        {
+            _displayWidth = _sourceWidth;
+            _displayHeight = _sourceHeight;
+        }
     }
 
     private void VideoPlayer_MediaEnded(object sender, RoutedEventArgs e)
@@ -187,8 +265,8 @@ public partial class MainWindow : Window
     private void RecalculateVideoDisplayRect()
     {
         if (!_mediaReady ||
-            _sourceWidth <= 0 ||
-            _sourceHeight <= 0 ||
+            _displayWidth <= 0 ||
+            _displayHeight <= 0 ||
             PreviewHost.ActualWidth <= 0 ||
             PreviewHost.ActualHeight <= 0)
         {
@@ -198,7 +276,7 @@ public partial class MainWindow : Window
 
         var hostWidth = PreviewHost.ActualWidth;
         var hostHeight = PreviewHost.ActualHeight;
-        var sourceAspect = (double)_sourceWidth / _sourceHeight;
+        var sourceAspect = (double)_displayWidth / _displayHeight;
         var hostAspect = hostWidth / hostHeight;
 
         if (hostAspect > sourceAspect)
@@ -213,6 +291,33 @@ public partial class MainWindow : Window
             var height = width / sourceAspect;
             _videoDisplayRect = new Rect(0, (hostHeight - height) / 2.0, width, height);
         }
+
+        UpdateVideoPlayerLayout();
+    }
+
+    private void UpdateVideoPlayerLayout()
+    {
+        if (_videoDisplayRect.IsEmpty)
+        {
+            return;
+        }
+
+        // Size the unrotated MediaElement to the stored frame. For a 90°/270° phone
+        // rotation its layout width/height are swapped relative to the upright display
+        // rectangle. Rotating around the center then lands exactly on _videoDisplayRect.
+        var swapsAxes = _clockwiseRotationDegrees is 90 or 270;
+        var playerWidth = swapsAxes ? _videoDisplayRect.Height : _videoDisplayRect.Width;
+        var playerHeight = swapsAxes ? _videoDisplayRect.Width : _videoDisplayRect.Height;
+        var centerX = _videoDisplayRect.Left + (_videoDisplayRect.Width / 2.0);
+        var centerY = _videoDisplayRect.Top + (_videoDisplayRect.Height / 2.0);
+
+        VideoPlayer.Width = playerWidth;
+        VideoPlayer.Height = playerHeight;
+        Canvas.SetLeft(VideoPlayer, centerX - (playerWidth / 2.0));
+        Canvas.SetTop(VideoPlayer, centerY - (playerHeight / 2.0));
+        VideoPlayer.RenderTransform = _clockwiseRotationDegrees == 0
+            ? Transform.Identity
+            : new RotateTransform(_clockwiseRotationDegrees);
     }
 
     private void ResetCrop_Click(object sender, RoutedEventArgs e)
@@ -233,11 +338,11 @@ public partial class MainWindow : Window
             return;
         }
 
-        var size = Math.Min(_sourceWidth, _sourceHeight);
-        var x = (_sourceWidth - size) / 2.0 / _sourceWidth;
-        var y = (_sourceHeight - size) / 2.0 / _sourceHeight;
-        var width = (double)size / _sourceWidth;
-        var height = (double)size / _sourceHeight;
+        var size = Math.Min(_displayWidth, _displayHeight);
+        var x = (_displayWidth - size) / 2.0 / _displayWidth;
+        var y = (_displayHeight - size) / 2.0 / _displayHeight;
+        var width = (double)size / _displayWidth;
+        var height = (double)size / _displayHeight;
 
         _normalizedCrop = new Rect(x, y, width, height);
         UpdateCropVisuals();
@@ -452,17 +557,19 @@ public partial class MainWindow : Window
 
     private CropRegion GetSourceCropRegion()
     {
-        var x = MakeEven((int)Math.Round(_normalizedCrop.X * _sourceWidth));
-        var y = MakeEven((int)Math.Round(_normalizedCrop.Y * _sourceHeight));
+        // FFmpeg auto-rotates phone footage before applying -vf. Express the crop in
+        // display-oriented dimensions so these coordinates match what the user sees.
+        var x = MakeEven((int)Math.Round(_normalizedCrop.X * _displayWidth));
+        var y = MakeEven((int)Math.Round(_normalizedCrop.Y * _displayHeight));
 
-        x = Math.Clamp(x, 0, Math.Max(0, MakeEven(_sourceWidth - 2)));
-        y = Math.Clamp(y, 0, Math.Max(0, MakeEven(_sourceHeight - 2)));
+        x = Math.Clamp(x, 0, Math.Max(0, MakeEven(_displayWidth - 2)));
+        y = Math.Clamp(y, 0, Math.Max(0, MakeEven(_displayHeight - 2)));
 
-        var width = MakeEven((int)Math.Round(_normalizedCrop.Width * _sourceWidth));
-        var height = MakeEven((int)Math.Round(_normalizedCrop.Height * _sourceHeight));
+        var width = MakeEven((int)Math.Round(_normalizedCrop.Width * _displayWidth));
+        var height = MakeEven((int)Math.Round(_normalizedCrop.Height * _displayHeight));
 
-        var maxWidth = Math.Max(2, MakeEven(_sourceWidth - x));
-        var maxHeight = Math.Max(2, MakeEven(_sourceHeight - y));
+        var maxWidth = Math.Max(2, MakeEven(_displayWidth - x));
+        var maxHeight = Math.Max(2, MakeEven(_displayHeight - y));
 
         width = Math.Clamp(width, 2, maxWidth);
         height = Math.Clamp(height, 2, maxHeight);
