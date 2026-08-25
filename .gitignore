@@ -1,0 +1,24 @@
+# .NET build output
+bin/
+obj/
+artifacts/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# JetBrains
+.idea/
+*.sln.iml
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local tools / generated video output
+tools/ffmpeg.exe
+*-ebay.mp4
